@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.overseer/
+*.md
+!/README.md

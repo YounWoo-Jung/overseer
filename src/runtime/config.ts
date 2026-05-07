@@ -1,0 +1,63 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+export interface AssistantConfig {
+  maxCaptureLines: number;
+  watchIntervalMs: number;
+  injectEnabled: boolean;
+  injectCooldownMs: number;
+  allowedSessions: string[];
+}
+
+const DEFAULT_CONFIG: AssistantConfig = {
+  maxCaptureLines: 200,
+  watchIntervalMs: 5000,
+  injectEnabled: false,
+  injectCooldownMs: 120_000,
+  allowedSessions: [],
+};
+
+export function loadAssistantConfig(projectDir: string): AssistantConfig {
+  const root = resolve(projectDir);
+  const candidates = [
+    join(root, 'overseer.config.json'),
+    join(root, '.overseer', 'config.json'),
+  ];
+  const fileConfig = candidates
+    .map((path) => existsSync(path) ? readConfigFile(path) : null)
+    .find((config): config is Partial<AssistantConfig> => Boolean(config)) ?? {};
+
+  return {
+    maxCaptureLines: readNumber('OVERSEER_MAX_CAPTURE_LINES', fileConfig.maxCaptureLines, DEFAULT_CONFIG.maxCaptureLines),
+    watchIntervalMs: readNumber('OVERSEER_WATCH_INTERVAL_MS', fileConfig.watchIntervalMs, DEFAULT_CONFIG.watchIntervalMs),
+    injectEnabled: readBool('OVERSEER_INJECT_ENABLED', fileConfig.injectEnabled, DEFAULT_CONFIG.injectEnabled),
+    injectCooldownMs: readNumber('OVERSEER_INJECT_COOLDOWN_MS', fileConfig.injectCooldownMs, DEFAULT_CONFIG.injectCooldownMs),
+    allowedSessions: readList('OVERSEER_ALLOWED_SESSIONS', fileConfig.allowedSessions, DEFAULT_CONFIG.allowedSessions),
+  };
+}
+
+function readConfigFile(path: string): Partial<AssistantConfig> | null {
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as Partial<AssistantConfig>;
+  } catch {
+    return null;
+  }
+}
+
+function readNumber(name: string, value: number | undefined, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number(raw) : value;
+  return Number.isFinite(parsed) && Number(parsed) > 0 ? Math.floor(Number(parsed)) : fallback;
+}
+
+function readBool(name: string, value: boolean | undefined, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return value ?? fallback;
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
+function readList(name: string, value: string[] | undefined, fallback: string[]): string[] {
+  const raw = process.env[name];
+  if (!raw) return Array.isArray(value) ? value : fallback;
+  return raw.split(',').map((item) => item.trim()).filter(Boolean);
+}

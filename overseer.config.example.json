@@ -1,0 +1,7 @@
+{
+  "maxCaptureLines": 200,
+  "watchIntervalMs": 5000,
+  "injectEnabled": false,
+  "injectCooldownMs": 120000,
+  "allowedSessions": []
+}
