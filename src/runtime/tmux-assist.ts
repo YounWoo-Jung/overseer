@@ -20,7 +20,7 @@ export function buildTmuxAssistInsight(projectDir: string, signal: ClassifiedSig
     `${run.success ? 'success' : 'failed'}: ${run.task}`
   );
   const skills = autoMatchSkills(projectDir, query, 3).map((skill) => skill.name);
-  const prefix = repeatCount >= 2 ? `반복 감지(${repeatCount}회): ${signal.title}` : signal.title;
+  const prefix = repeatCount >= 2 ? `Repeated signal (${repeatCount}x): ${signal.title}` : signal.title;
   const assistLines = [
     `Evidence: ${signal.evidence}`,
     relatedRuns.length ? `Related runs: ${relatedRuns.join(' / ')}` : '',
@@ -39,11 +39,11 @@ export function buildTmuxAssistInsight(projectDir: string, signal: ClassifiedSig
     relatedRuns,
     skills,
     prompt: compactText([
-      `주의: ${prefix}`,
-      `근거: ${signal.evidence}`,
-      relatedRuns.length ? `관련 경험: ${relatedRuns.join(' / ')}` : '',
-      skills.length ? `추천 skill: ${skills.join(', ')}` : '',
-      `제안: ${signal.suggestion}`,
+      `Attention: ${prefix}`,
+      `Evidence: ${signal.evidence}`,
+      relatedRuns.length ? `Related runs: ${relatedRuns.join(' / ')}` : '',
+      skills.length ? `Recommended skills: ${skills.join(', ')}` : '',
+      `Suggestion: ${signal.suggestion}`,
     ].filter(Boolean).join('\n'), 140, 'tail'),
     assistLines,
   };

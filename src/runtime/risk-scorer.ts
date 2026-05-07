@@ -6,17 +6,12 @@ export interface RiskAssessment {
 }
 
 const SAFE_PATTERNS = [
-  /^현재\s/,
-  /^먼저\s/,
-  /^확인/,
-  /^주의/,
-  /^요약/,
-  /^리뷰/,
-  /^검증/,
   /^Please\s/i,
   /^Check\s/i,
   /^Review\s/i,
   /^Consider\s/i,
+  /^Summarize\s/i,
+  /^Validate\s/i,
 ];
 
 const DANGEROUS_PATTERNS = [

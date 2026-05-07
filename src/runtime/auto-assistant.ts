@@ -71,7 +71,7 @@ function scanOnce(projectDir: string, seen: Set<string>): {
     });
     appendAssist(projectDir, 'Claude Code permission risk', [
       'Claude Code dangerous permission prompt skip is enabled.',
-      '권한 자동 우회 상태에서는 tmux 주입보다 hook 기반 감사 로그를 우선 확인하세요.',
+      'Prefer hook-based audit logs over tmux injection when permission prompts are bypassed.',
     ]);
   }
 
@@ -80,7 +80,7 @@ function scanOnce(projectDir: string, seen: Set<string>): {
     appendAssist(projectDir, 'Codex integration notice', [
       `hooks: ${codex.hooksEnabled ? 'on' : 'off'}`,
       `memories: ${codex.memoriesEnabled ? 'on' : 'off'}`,
-      'Codex hooks/memories가 꺼져 있으면 tmux/process 감시에 더 의존합니다.',
+      'When Codex hooks or memories are disabled, rely more on tmux and process monitoring.',
     ]);
   }
 
@@ -104,7 +104,7 @@ function scanOnce(projectDir: string, seen: Set<string>): {
         appendAssist(projectDir, 'AI CLI dangerous mode detected', [
           `Pane: ${pane.paneId} (${pane.sessionName})`,
           `Command: ${pane.currentCommand}`,
-          '권한/샌드박스 우회 실행은 자동 조작보다 감사 로그와 승인 큐를 우선하세요.',
+          'For permission or sandbox bypass mode, prefer audit logs and the approval queue over automatic control.',
         ]);
       }
     }

@@ -22,7 +22,7 @@ export interface LoadedSkill {
 const STOP_WORDS = new Set([
   'the', 'and', 'for', 'not', 'you', 'all', 'can', 'are', 'has', 'have',
   'from', 'this', 'that', 'with', 'will', 'when', 'use', 'how', 'which',
-  'their', 'what', '있는', '하는', '위한', '대한', '통해',
+  'their', 'what',
 ]);
 
 export function indexSkills(projectDir: string): SkillIndexEntry[] {

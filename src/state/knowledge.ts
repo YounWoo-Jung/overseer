@@ -67,7 +67,7 @@ function extractReviewRules(review: string): string[] {
   return review
     .split('\n')
     .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter((line) => /검증|테스트|반복|규칙|주의|누락|실패|리팩토링|타입|빌드/.test(line))
+    .filter((line) => /validation|test|repeat|rule|caution|missing|failure|refactor|type|build/i.test(line))
     .map((line) => line.slice(0, 180))
     .filter(Boolean)
     .slice(0, 5);

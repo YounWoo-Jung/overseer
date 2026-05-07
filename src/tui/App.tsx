@@ -194,15 +194,15 @@ export function App({ projectDir }: { projectDir: string }) {
           ))}
           {view === 'help' && (
             <Box flexDirection="column">
-              <Text color="cyan">자연어 입력은 백그라운드 어시스턴트 큐에 등록됩니다.</Text>
-              <Text>/status  대시보드 보기</Text>
-              <Text>/queue   어시스턴트 큐 보기</Text>
-              <Text>/inbox   감시/학습 기록 보기</Text>
-              <Text>/runs    최근 실행 보기</Text>
-              <Text>/skills  스킬 점수/비활성 상태 보기</Text>
-              <Text>/plan    현재/최근 계획 보기</Text>
-              <Text>/clear   현재 화면 로그 지우기</Text>
-              <Text>/exit    종료</Text>
+              <Text color="cyan">Natural language input is queued for the background assistant.</Text>
+              <Text>/status  Show dashboard</Text>
+              <Text>/queue   Show assistant queue</Text>
+              <Text>/inbox   Show monitoring and learning history</Text>
+              <Text>/runs    Show recent runs</Text>
+              <Text>/skills  Show skill scores and disabled status</Text>
+              <Text>/plan    Show current or recent plan</Text>
+              <Text>/clear   Clear current screen log</Text>
+              <Text>/exit    Exit</Text>
             </Box>
           )}
           {view !== 'help' && events.length === 0 && runs.length === 0 && <Text color="gray">no activity yet</Text>}
