@@ -17,6 +17,12 @@ interface AutoAssistantInput {
   shouldStop?: () => boolean;
 }
 
+export interface AutoAssistantScanResult {
+  panes: number;
+  signals: number;
+  notes: number;
+}
+
 const AI_NAMES = ['claude', 'codex', 'opencode', 'gemini'];
 
 export async function runAutoAssistant(input: AutoAssistantInput): Promise<void> {
@@ -26,7 +32,7 @@ export async function runAutoAssistant(input: AutoAssistantInput): Promise<void>
   input.onLog?.('auto assistant started');
 
   do {
-    const result = scanOnce(input.projectDir, seen);
+    const result = scanAutoAssistantOnce(input.projectDir, seen);
     input.onLog?.(`ai-cli: panes ${result.panes} | signals ${result.signals} | notes ${result.notes}`);
     if (input.once) break;
     await new Promise((resolveTimer) => setTimeout(resolveTimer, intervalMs));
@@ -35,11 +41,7 @@ export async function runAutoAssistant(input: AutoAssistantInput): Promise<void>
   input.onLog?.('auto assistant stopped');
 }
 
-function scanOnce(projectDir: string, seen: Set<string>): {
-  panes: number;
-  signals: number;
-  notes: number;
-} {
+export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): AutoAssistantScanResult {
   const claude = readClaudeCodeStatus(projectDir);
   const codex = readCodexStatus();
   const panes = hasTmux() ? captureTmuxPanes('', loadAssistantConfig(projectDir).maxCaptureLines).filter(isAiPane) : [];

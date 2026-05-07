@@ -27,23 +27,19 @@ import { runAutoAssistant } from './runtime/auto-assistant.js';
 function usage(): void {
   console.log([
     'overseer',
-    'AI CLI assistant monitor and manager',
+    'AI CLI development assistant',
     '',
     'Usage:',
-    '  overseer                 Auto-assist AI CLIs running inside tmux',
-    '  overseer tui [dir]       Start monitor TUI',
-    '  overseer status [dir]    Show assistant status',
-    '  overseer inbox [dir]     Show assistant notes history',
-    '  overseer events [dir]    Show assistant event log',
+    '  overseer                 Start unified monitoring TUI',
     '',
-    'Advanced:',
-    '  overseer daemon start [dir]  Start assistant in background',
-    '  overseer daemon stop [dir]   Stop background assistant',
-    '  overseer daemon status [dir] Show background assistant status',
-    '  overseer submit <task>   Queue a task for the agent',
-    '  overseer inject list     Show prompt injection proposals',
-    '  overseer inject approve <id> [--force]  Send approved prompt',
-    '  overseer inject deny <id> Deny prompt injection proposal',
+    'TUI commands:',
+    '  /calls       Show call/event log',
+    '  /audit       Show audit index and risks',
+    '  /knowledge   Show development pattern and knowledge state',
+    '  /logs        Show assistant operation log',
+    '  /run <task>  Run a development task now',
+    '  /scan        Run monitor scan now',
+    '  /help        Show TUI help',
     '',
   ].join('\n'));
 }
@@ -57,14 +53,18 @@ async function main(): Promise<void> {
   }
 
   if (!command) {
-    let stopping = false;
-    process.once('SIGINT', () => { stopping = true; });
-    process.once('SIGTERM', () => { stopping = true; });
-    await runAutoAssistant({
-      projectDir: process.cwd(),
-      onLog: (message) => console.log(`[assist] ${message}`),
-      shouldStop: () => stopping,
-    });
+    if (!process.stdin.isTTY) {
+      let stopping = false;
+      process.once('SIGINT', () => { stopping = true; });
+      process.once('SIGTERM', () => { stopping = true; });
+      await runAutoAssistant({
+        projectDir: process.cwd(),
+        onLog: (message) => console.log(`[assist] ${message}`),
+        shouldStop: () => stopping,
+      });
+      return;
+    }
+    render(<App projectDir={process.cwd()} />, { exitOnCtrlC: true });
     return;
   }
 
