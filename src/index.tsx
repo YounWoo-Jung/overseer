@@ -22,7 +22,13 @@ import { autoMatchSkills, indexSkills } from './state/skill-registry.js';
 import { buildTmuxAssistInsight } from './runtime/tmux-assist.js';
 import { importClaudeCodeMemory, readClaudeCodeStatus, recordClaudeCodeHook } from './runtime/claude-code.js';
 import { importCodexMemory, readCodexStatus, recordCodexHook } from './runtime/codex-context.js';
-import { runAutoAssistant } from './runtime/auto-assistant.js';
+import { runAutoAssistant, shouldProposeInjectionForSignal } from './runtime/auto-assistant.js';
+import { readIdleSchedulerSnapshot } from './runtime/idle-scheduler.js';
+import { createCheckpoint, listCheckpoints, restoreCheckpoint } from './runtime/checkpoint.js';
+import { evaluateDone, readDoneReport } from './runtime/completion.js';
+import { getHealth } from './runtime/health.js';
+import { readProvenance, recordProvenance, summarizeProvenance } from './runtime/provenance.js';
+import { getLaneStats } from './runtime/command-lane.js';
 
 function usage(): void {
   console.log([
@@ -30,7 +36,14 @@ function usage(): void {
     'AI CLI development assistant',
     '',
     'Usage:',
-    '  overseer                 Start unified monitoring TUI',
+    '  overseer <tmux-session>  Start unified monitoring TUI for one tmux session',
+    '  overseer goal <task>     Queue a product-completeness goal',
+    '  overseer checkpoint list|create|restore',
+    '  overseer done [dir]       Show completion verdict',
+    '  overseer doctor [dir]     Show local health checks',
+    '  overseer provenance [dir] Show input provenance log',
+    '  overseer tmux panes <tmux-session>',
+    '  overseer tmux watch <tmux-session> [--once]',
     '',
     'TUI commands:',
     '  /calls       Show call/event log',
@@ -38,11 +51,36 @@ function usage(): void {
     '  /knowledge   Show development pattern and knowledge state',
     '  /logs        Show assistant operation log',
     '  /run <task>  Run a development task now',
+    '  /goal <task> Queue a product-completeness goal',
     '  /scan        Run monitor scan now',
     '  /help        Show TUI help',
     '',
   ].join('\n'));
 }
+
+const KNOWN_COMMANDS = new Set([
+  'run',
+  'agent',
+  'daemon',
+  'submit',
+  'goal',
+  'status',
+  'tokens',
+  'claude',
+  'claude-hook',
+  'codex',
+  'codex-hook',
+  'skills',
+  'events',
+  'inject',
+  'checkpoint',
+  'done',
+  'doctor',
+  'provenance',
+  'tmux',
+  'inbox',
+  'tui',
+]);
 
 async function main(): Promise<void> {
   const [, , command, ...rest] = process.argv;
@@ -53,18 +91,25 @@ async function main(): Promise<void> {
   }
 
   if (!command) {
-    if (!process.stdin.isTTY) {
-      let stopping = false;
-      process.once('SIGINT', () => { stopping = true; });
-      process.once('SIGTERM', () => { stopping = true; });
-      await runAutoAssistant({
-        projectDir: process.cwd(),
-        onLog: (message) => console.log(`[assist] ${message}`),
-        shouldStop: () => stopping,
-      });
+    usage();
+    process.exitCode = 1;
+    return;
+  }
+
+  if (command === '--session' || command === '-s') {
+    const tmuxSessionName = rest[0];
+    if (!tmuxSessionName) {
+      usage();
+      process.exitCode = 1;
       return;
     }
-    render(<App projectDir={process.cwd()} />, { exitOnCtrlC: true });
+    await startMonitor(tmuxSessionName, process.cwd());
+    return;
+  }
+
+  if (!KNOWN_COMMANDS.has(command)) {
+    const tmuxSessionName = [command, ...rest].join(' ').trim();
+    await startMonitor(tmuxSessionName, process.cwd());
     return;
   }
 
@@ -75,6 +120,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    recordProvenance(process.cwd(), { source: 'cli', command: 'run', content: task });
     const result = await runAutonomousTask({
       task,
       projectDir: process.cwd(),
@@ -142,8 +188,22 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    recordProvenance(process.cwd(), { source: 'cli', command: 'submit', content: task });
     const job = submitAgentJob(process.cwd(), task);
     console.log(`queued: ${job.id}`);
+    return;
+  }
+
+  if (command === 'goal') {
+    const task = rest.join(' ').trim();
+    if (!task) {
+      usage();
+      process.exitCode = 1;
+      return;
+    }
+    recordProvenance(process.cwd(), { source: 'cli', command: 'goal', content: task });
+    const job = submitAgentJob(process.cwd(), task);
+    console.log(`goal queued: ${job.id}`);
     return;
   }
 
@@ -160,6 +220,7 @@ async function main(): Promise<void> {
     const profile = readProjectProfile(projectDir);
     const budget = readTokenBudget();
     const config = loadAssistantConfig(projectDir);
+    const idle = readIdleSchedulerSnapshot(projectDir);
     const injections = listInjections(projectDir, 100);
     const queued = jobs.filter((item) => item.job.state === 'queued').length;
     const running = jobs.filter((item) => item.job.state === 'running').length;
@@ -172,11 +233,21 @@ async function main(): Promise<void> {
     console.log(`inject: proposed ${injections.filter((item) => item.state === 'proposed').length} | sent ${injections.filter((item) => item.state === 'sent').length} | blocked ${injections.filter((item) => item.state === 'blocked').length}`);
     console.log(`token budget: prompt ${budget.maxPromptTokens} | context ${budget.maxContextTokens}`);
     console.log(`tmux: capture ${config.maxCaptureLines} lines | watch ${config.watchIntervalMs}ms | inject ${config.injectEnabled ? 'on' : 'off'}`);
+    console.log(`idle scheduler: ${config.idleSchedulerEnabled ? 'on' : 'off'} | threshold ${config.idleThresholdMs}ms | interval ${config.idleSchedulerIntervalMs}ms`);
+    console.log(`idle backlog: open ${idle.openBacklog}${idle.topGoal ? ` | top ${idle.topPriority}: ${idle.topGoal}` : ''}`);
+    console.log(`request direction: ${idle.direction}`);
+    console.log(`lanes: ${Object.entries(getLaneStats()).map(([lane, stat]) => `${lane}:${stat.active ? 'active' : 'idle'}/${stat.queued}`).join(' ')}`);
+    console.log(`provenance: ${Object.entries(summarizeProvenance(projectDir)).filter(([, count]) => count > 0).map(([source, count]) => `${source}:${count}`).join(' ') || 'empty'}`);
     const claude = readClaudeCodeStatus(projectDir);
     const codex = readCodexStatus();
     console.log(`claude: ${claude.exists ? 'found' : 'missing'} | memory ${claude.projectMemoryFiles} | dangerous-skip ${claude.skipDangerousModePermissionPrompt ? 'on' : 'off'}`);
     console.log(`codex: ${codex.exists ? 'found' : 'missing'} | hooks ${codex.hooksEnabled ? 'on' : 'off'} | memories ${codex.memoriesEnabled ? 'on' : 'off'}`);
     console.log(`runs: ${records.length} | success: ${success} | failed: ${failed}`);
+    const doneReport = readDoneReport(projectDir);
+    if (doneReport) {
+      const summary = doneReport.split('\n').find((line) => line.startsWith('## '))?.replace(/^##\s+/, '');
+      if (summary) console.log(`completion: ${summary}`);
+    }
     if (latest) {
       console.log(`latest: ${latest.success ? 'success' : 'failed'} | ${latest.task}`);
     }
@@ -328,9 +399,83 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'checkpoint') {
+    const [action, value] = rest;
+    const projectDir = process.cwd();
+    if (action === 'list') {
+      const checkpoints = listCheckpoints(projectDir, 20);
+      if (checkpoints.length === 0) {
+        console.log('checkpoints: empty');
+        return;
+      }
+      for (const checkpoint of checkpoints) {
+        console.log(`${checkpoint.id} ${checkpoint.timestamp} ${checkpoint.message}`);
+      }
+      return;
+    }
+    if (action === 'create') {
+      const result = createCheckpoint(projectDir, value ? rest.slice(1).join(' ') : 'manual checkpoint');
+      console.log(`${result.success ? 'created' : 'failed'}: ${result.id ?? result.message}`);
+      process.exitCode = result.success ? 0 : 1;
+      return;
+    }
+    if (action === 'restore' && value) {
+      const result = restoreCheckpoint(projectDir, value);
+      console.log(`${result.success ? 'restored' : 'failed'}: ${result.message}`);
+      process.exitCode = result.success ? 0 : 1;
+      return;
+    }
+    console.log('usage: overseer checkpoint list|create [label]|restore <id>');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (command === 'done') {
+    const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
+    const verdict = evaluateDone(projectDir);
+    console.log(verdict.summary);
+    for (const check of verdict.checks) {
+      console.log(`${check.passed ? 'pass' : 'fail'} ${check.required ? 'required' : 'optional'} ${check.name}: ${check.message}`);
+    }
+    return;
+  }
+
+  if (command === 'doctor') {
+    const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
+    const health = getHealth(projectDir);
+    console.log(`health: ${health.status}`);
+    for (const check of health.checks) {
+      console.log(`${check.status} ${check.name}: ${check.message}`);
+    }
+    return;
+  }
+
+  if (command === 'provenance') {
+    const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
+    const records = readProvenance(projectDir, 20).reverse();
+    if (records.length === 0) {
+      console.log('provenance: empty');
+      return;
+    }
+    for (const record of records) {
+      console.log(`${record.timestamp} [${record.source}] ${record.command ?? ''} ${record.content}`);
+    }
+    return;
+  }
+
   if (command === 'tmux') {
     const [action] = rest;
-    const target = rest.slice(1).find((item) => item !== '--once');
+    const target = rest.slice(1).find((item) => item !== '--once') ?? '';
+    if (action === 'panes' && !target) {
+      console.log('usage: overseer tmux panes <tmux-session>');
+      process.exitCode = 1;
+      return;
+    }
+    if (action === 'watch' && !target) {
+      console.log('usage: overseer tmux watch <tmux-session> [--once]');
+      process.exitCode = 1;
+      return;
+    }
     if (!hasTmux()) {
       console.log('tmux: not installed');
       process.exitCode = 1;
@@ -346,12 +491,12 @@ async function main(): Promise<void> {
     if (action === 'panes') {
       const projectDir = process.cwd();
       const config = loadAssistantConfig(projectDir);
-      const panes = captureTmuxPanes(target ?? '', config.maxCaptureLines);
+      const panes = captureTmuxPanes(target, config.maxCaptureLines);
       recordEvent(projectDir, {
         type: 'tmux.captured',
         severity: 'info',
         provenance: { source: 'tmux', sessionId: target },
-        payload: { target: target ?? 'all', panes: panes.length },
+        payload: { target, panes: panes.length },
       });
       for (const pane of panes) {
         console.log(`${pane.paneId} ${pane.sessionName}:${pane.windowIndex} active=${pane.active} cmd=${pane.currentCommand}`);
@@ -385,16 +530,14 @@ async function main(): Promise<void> {
   }
 
   if (command === 'tui') {
-    const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
-    if (!process.stdin.isTTY) {
-      console.log('overseer: TUI requires a TTY. Starting auto assistant.');
-      await runAutoAssistant({
-        projectDir,
-        onLog: (message) => console.log(`[assist] ${message}`),
-      });
+    const tmuxSessionName = rest[0];
+    const projectDir = rest[1] ? resolve(rest[1]) : process.cwd();
+    if (!tmuxSessionName) {
+      usage();
+      process.exitCode = 1;
       return;
     }
-    render(<App projectDir={projectDir} />, { exitOnCtrlC: true });
+    await startMonitor(tmuxSessionName, projectDir);
     return;
   }
 
@@ -410,6 +553,22 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+async function startMonitor(tmuxSessionName: string, projectDir: string): Promise<void> {
+  if (!process.stdin.isTTY) {
+    let stopping = false;
+    process.once('SIGINT', () => { stopping = true; });
+    process.once('SIGTERM', () => { stopping = true; });
+    await runAutoAssistant({
+      projectDir,
+      tmuxSessionName,
+      onLog: (message) => console.log(`[assist] ${message}`),
+      shouldStop: () => stopping,
+    });
+    return;
+  }
+  render(<App projectDir={projectDir} tmuxSessionName={tmuxSessionName} />, { exitOnCtrlC: true });
+}
+
 function isPidRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -419,7 +578,7 @@ function isPidRunning(pid: number): boolean {
   }
 }
 
-async function watchTmux(target: string | undefined, once: boolean): Promise<void> {
+async function watchTmux(target: string, once: boolean): Promise<void> {
   const projectDir = process.cwd();
   const config = loadAssistantConfig(projectDir);
   const seen = new Map<string, string>();
@@ -429,7 +588,7 @@ async function watchTmux(target: string | undefined, once: boolean): Promise<voi
   process.once('SIGTERM', () => { stopping = true; });
 
   do {
-    const panes = captureTmuxPanes(target ?? '', config.maxCaptureLines);
+    const panes = captureTmuxPanes(target, config.maxCaptureLines);
     let changed = 0;
     for (const pane of panes) {
       const hash = hashText(`${pane.currentCommand}\n${pane.currentPath}\n${pane.content}`);
@@ -473,6 +632,12 @@ async function watchTmux(target: string | undefined, once: boolean): Promise<voi
         });
         const insight = buildTmuxAssistInsight(projectDir, signal);
         if (signal.severity !== 'info') {
+          appendAssist(projectDir, signal.title, [
+            `Pane: ${pane.paneId} (${pane.sessionName})`,
+            ...insight.assistLines,
+          ]);
+        }
+        if (shouldProposeInjectionForSignal(signal)) {
           proposeInjection(projectDir, {
             paneId: pane.paneId,
             sessionName: pane.sessionName,
@@ -480,10 +645,6 @@ async function watchTmux(target: string | undefined, once: boolean): Promise<voi
             reason: `${signal.type}: ${signal.evidence}`,
             dedupKey: hashText(`${pane.paneId}:${signal.type}:${signal.evidence}`),
           });
-          appendAssist(projectDir, signal.title, [
-            `Pane: ${pane.paneId} (${pane.sessionName})`,
-            ...insight.assistLines,
-          ]);
         }
       }
     }

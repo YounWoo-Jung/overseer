@@ -103,6 +103,16 @@ export function approveInjection(projectDir: string, id: string, force = false):
   const proposal = [...listInjections(projectDir, 500)].reverse().find((item) => item.id === id);
   if (!proposal) return { success: false, message: 'proposal not found' };
   if (proposal.state !== 'proposed') return { success: false, message: `proposal is ${proposal.state}` };
+  if (proposal.risk.hardline) {
+    appendState(projectDir, { ...proposal, state: 'blocked', updatedAt: new Date().toISOString() });
+    recordEvent(projectDir, {
+      type: 'inject.blocked',
+      severity: 'critical',
+      provenance: { source: 'user', sessionId: proposal.sessionName, paneId: proposal.paneId },
+      payload: { id: proposal.id, reason: 'hardline risk', flags: proposal.risk.flags },
+    });
+    return { success: false, message: 'hardline risk blocked' };
+  }
   if (proposal.risk.level === 'danger' && !force) return { success: false, message: 'danger risk requires --force' };
 
   const config = loadAssistantConfig(projectDir);
@@ -173,6 +183,6 @@ function writeCooldown(projectDir: string, cooldown: Record<string, number>): vo
 
 function isLikelyAiCliPane(command: string): boolean {
   const normalized = command.toLowerCase();
-  return ['claude', 'codex', 'opencode', 'gemini'].some((name) => normalized.includes(name))
+  return ['claude', 'codex'].some((name) => normalized.includes(name))
     || normalized === 'node';
 }

@@ -3,3 +3,6 @@ dist/
 .overseer/
 *.md
 !/README.md
+!docs/CLAUDE_CODEX_INTEGRATION_PLAN.md
+!docs/DEVELOPMENT_DIRECTION.md
+!docs/FEATURE_WIRING.md

@@ -13,7 +13,10 @@ import { listInjections, approveInjection, denyInjection } from '../runtime/inje
 import { readClaudeCodeStatus } from '../runtime/claude-code.js';
 import { readCodexStatus } from '../runtime/codex-context.js';
 import { scanAutoAssistantOnce, type AutoAssistantScanResult } from '../runtime/auto-assistant.js';
+import { readIdleSchedulerSnapshot, recordUserRequestPattern } from '../runtime/idle-scheduler.js';
 import { readTokenBudget } from '../runtime/token-budget.js';
+import { getLaneStats } from '../runtime/command-lane.js';
+import { recordProvenance, summarizeProvenance } from '../runtime/provenance.js';
 import type { AgentEvent, AgentPhase, RunResult } from '../types.js';
 
 type ViewMode = 'dashboard' | 'calls' | 'audit' | 'knowledge' | 'logs' | 'runs' | 'skills' | 'queue' | 'inbox' | 'inject' | 'plan' | 'help';
@@ -80,7 +83,7 @@ function logLine(message: string): string {
   return `${new Date().toLocaleTimeString()} ${message}`;
 }
 
-export function App({ projectDir }: { projectDir: string }) {
+export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxSessionName: string }) {
   const { exit } = useApp();
   const seenRef = useRef(new Set<string>());
   const [task, setTask] = useState('');
@@ -93,7 +96,9 @@ export function App({ projectDir }: { projectDir: string }) {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [refreshTick, setRefreshTick] = useState(Date.now());
-  const [scanResult, setScanResult] = useState<AutoAssistantScanResult>({ panes: 0, signals: 0, notes: 0 });
+  const [scanResult, setScanResult] = useState<AutoAssistantScanResult>({ panes: 0, signals: 0, notes: 0, requests: 0, idle: 'waiting', targets: [] });
+  const [lastScanAt, setLastScanAt] = useState('');
+  const [scanCount, setScanCount] = useState(0);
   const [operationLog, setOperationLog] = useState<string[]>([]);
   void refreshTick;
   const runs = readRunRecords(projectDir);
@@ -109,6 +114,9 @@ export function App({ projectDir }: { projectDir: string }) {
   const provider = availableProvider();
   const claude = readClaudeCodeStatus(projectDir);
   const codex = readCodexStatus();
+  const idleSnapshot = readIdleSchedulerSnapshot(projectDir);
+  const laneStats = getLaneStats();
+  const provenanceStats = summarizeProvenance(projectDir);
   const lastPlanEvent = useMemo(() => [...events].reverse().find((event) => event.phase === 'plan'), [events]);
   const currentPlan = result?.plan.steps.length
     ? result.plan.steps
@@ -125,6 +133,7 @@ export function App({ projectDir }: { projectDir: string }) {
   const pluginCount = claude.enabledPlugins;
   const skillCount = registeredSkills.length + claude.userComponents.skills + codex.userSkills + codex.systemSkills;
   const memoryCount = claude.projectMemoryFiles + codex.memoryFiles;
+  const heartbeat = ['|', '/', '-', '\\'][scanCount % 4];
   const indexes = scoreIndexes({
     events: eventLog,
     histories: history.length,
@@ -143,12 +152,14 @@ export function App({ projectDir }: { projectDir: string }) {
     let stopped = false;
     const refresh = () => {
       try {
-        const next = scanAutoAssistantOnce(projectDir, seenRef.current);
+        const next = scanAutoAssistantOnce(projectDir, seenRef.current, tmuxSessionName);
         if (stopped) return;
         setScanResult(next);
+        setLastScanAt(new Date().toLocaleTimeString());
+        setScanCount((count) => count + 1);
         setRefreshTick(Date.now());
         setOperationLog((prev) => [
-          logLine(`scan panes=${next.panes} signals=${next.signals} notes=${next.notes}`),
+          logLine(`scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle}${next.goal ? ` priority=${next.priority ?? 0}` : ''} notes=${next.notes}`),
           ...prev,
         ].slice(0, 40));
       } catch (error) {
@@ -162,11 +173,13 @@ export function App({ projectDir }: { projectDir: string }) {
       stopped = true;
       clearInterval(id);
     };
-  }, [projectDir]);
+  }, [projectDir, tmuxSessionName]);
 
   const submit = async (value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
+    recordUserRequestPattern(projectDir, trimmed, 'tui');
+    recordProvenance(projectDir, { source: 'tui', command: 'submit', sessionId: tmuxSessionName, content: trimmed });
     if (trimmed === '/exit' || trimmed === '/quit') {
       exit();
       return;
@@ -194,10 +207,12 @@ export function App({ projectDir }: { projectDir: string }) {
       return;
     }
     if (trimmed === '/scan') {
-      const next = scanAutoAssistantOnce(projectDir, seenRef.current);
+      const next = scanAutoAssistantOnce(projectDir, seenRef.current, tmuxSessionName);
       setScanResult(next);
+      setLastScanAt(new Date().toLocaleTimeString());
+      setScanCount((count) => count + 1);
       setRefreshTick(Date.now());
-      setOperationLog((prev) => [logLine(`manual scan panes=${next.panes} signals=${next.signals} notes=${next.notes}`), ...prev].slice(0, 40));
+      setOperationLog((prev) => [logLine(`manual scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle}${next.goal ? ` priority=${next.priority ?? 0}` : ''} notes=${next.notes}`), ...prev].slice(0, 40));
       setNotice('scan completed');
       setTask('');
       return;
@@ -251,6 +266,22 @@ export function App({ projectDir }: { projectDir: string }) {
       }
       return;
     }
+    if (trimmed.startsWith('/goal ')) {
+      const goalTask = trimmed.slice('/goal '.length).trim();
+      if (!goalTask) {
+        setNotice('usage: /goal <task>');
+        setTask('');
+        return;
+      }
+      setTask('');
+      setEvents([]);
+      setResult(null);
+      setActiveTask(goalTask);
+      const job = submitAgentJob(projectDir, goalTask);
+      setView('queue');
+      setNotice(`goal queued ${job.id}`);
+      return;
+    }
     if (trimmed === '/clear') {
       setEvents([]);
       setResult(null);
@@ -274,20 +305,26 @@ export function App({ projectDir }: { projectDir: string }) {
       <Box borderStyle="single" paddingX={1} flexDirection="column">
         <Box justifyContent="space-between">
           <Text bold>overseer TUI</Text>
-          <Text color={status?.state === 'running' ? 'yellow' : 'green'}>{status?.state ?? 'not started'}</Text>
+          <Text color="green">LIVE {heartbeat} scan #{scanCount}</Text>
         </Box>
         <Text color="gray">project: {projectDir}</Text>
-        <Text color="gray">provider: {provider} | view: {view} | /help /calls /audit /knowledge /logs /run /scan /exit</Text>
+        <Text color="gray">tmux session: {tmuxSessionName}</Text>
+        <Text color="gray">provider: {provider} | agent: {status?.state ?? 'not started'} | view: {view} | /help /calls /audit /knowledge /logs /run /goal /scan /exit</Text>
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
         <Box gap={1}>
           <Box borderStyle="single" paddingX={1} flexDirection="column" width="33%">
             <Text bold>Monitor</Text>
-            <Text color="gray">state: {status?.state ?? 'not started'}</Text>
+            <Text color="green">watching {tmuxSessionName} every 3s</Text>
+            <Text color="gray">last scan: {lastScanAt || 'starting'} | {heartbeat}</Text>
             <Text color="gray">panes: {scanResult.panes} | signals: {scanResult.signals}</Text>
+            <Text color="gray">requests: {scanResult.requests} | idle: {scanResult.idle}</Text>
+            <Text color="gray">last req: {idleSnapshot.lastUserRequestAt?.slice(11, 19) ?? 'none'}</Text>
+            <Text color="gray">backlog: {idleSnapshot.openBacklog} | top: {idleSnapshot.topPriority ?? 0}</Text>
             <Text color="gray">calls: {eventLog.length} | warnings: {warningCount}</Text>
             <Text color="gray">queue: {queuedCount} | running: {runningCount}</Text>
+            <Text color="gray">lanes: scan {laneStats.scan.active ? 'active' : 'idle'}/{laneStats.scan.queued} run {laneStats.run.active ? 'active' : 'idle'}/{laneStats.run.queued}</Text>
             <Text color="gray">{profile ? `files: ${profile.fileCount}` : 'no profile yet'}</Text>
           </Box>
           <Box borderStyle="single" paddingX={1} flexDirection="column" width="34%">
@@ -296,6 +333,7 @@ export function App({ projectDir }: { projectDir: string }) {
             <Text color="gray">runs: {runs.length} | pass: {successCount} | fail: {failedCount}</Text>
             <Text color="gray">memory: {memoryCount} | history: {history.length}</Text>
             <Text color="gray">injections: {proposedInjections} pending</Text>
+            <Text color="gray">inputs: tui {provenanceStats.tui} tmux {provenanceStats.tmux} cli {provenanceStats.cli}</Text>
           </Box>
           <Box borderStyle="single" paddingX={1} flexDirection="column" width="33%">
             <Text bold>Indexes</Text>
@@ -313,6 +351,15 @@ export function App({ projectDir }: { projectDir: string }) {
           {view === 'dashboard' && (
             <Box flexDirection="column">
               <Text color="gray">calls={eventLog.length} audit={indexes.audit} analysis={indexes.analysis} knowledge={indexes.knowledge}</Text>
+              <Text color="gray">direction={truncate(idleSnapshot.direction, 96)}</Text>
+              {idleSnapshot.lastUserRequest && <Text color="gray">last request={truncate(idleSnapshot.lastUserRequest, 96)}</Text>}
+              {idleSnapshot.topGoal && <Text color="gray">top goal={truncate(idleSnapshot.topGoal, 96)}</Text>}
+              {scanResult.targets.length === 0 && <Text color="yellow">target: no Claude/Codex pane detected in this session</Text>}
+              {scanResult.targets.slice(0, 3).map((target) => (
+                <Text key={`${target.paneId}-${target.command}`} color={target.active ? 'green' : 'gray'}>
+                  target {target.paneId} {target.active ? 'active' : 'idle'} cmd={target.command} last={truncate(target.lastLine || target.currentPath, 76)}
+                </Text>
+              ))}
               {operationLog.slice(0, 6).map((line, index) => (
                 <Text key={`${line}-${index}`} color="gray">{truncate(line, 110)}</Text>
               ))}
@@ -346,6 +393,8 @@ export function App({ projectDir }: { projectDir: string }) {
               <Text color="gray">skills: local {registeredSkills.length}, claude {claude.userComponents.skills}, codex {codex.userSkills + codex.systemSkills}</Text>
               <Text color="gray">memory: claude {claude.projectMemoryFiles}, codex {codex.memoryFiles}</Text>
               <Text color="gray">patterns/history: {history.length} | project files: {profile?.fileCount ?? 0}</Text>
+              <Text color="gray">direction: {truncate(idleSnapshot.direction, 100)}</Text>
+              <Text color="gray">idle backlog: {idleSnapshot.openBacklog} | last: {idleSnapshot.lastScheduledAt?.slice(0, 19) ?? 'none'}</Text>
               {history.slice(-8).reverse().map((item) => (
                 <Text key={item.id} color="cyan">[{item.kind}] {truncate(item.title, 90)}</Text>
               ))}
@@ -396,6 +445,7 @@ export function App({ projectDir }: { projectDir: string }) {
               <Text>/approve &lt;id&gt; Approve injection proposal</Text>
               <Text>/deny &lt;id&gt; Deny injection proposal</Text>
               <Text>/run &lt;task&gt; Run a development task now</Text>
+              <Text>/goal &lt;task&gt; Queue a product-completeness goal</Text>
               <Text>/scan    Run monitor scan now</Text>
               <Text>/runs    Show recent runs</Text>
               <Text>/skills  Show skill scores and disabled status</Text>

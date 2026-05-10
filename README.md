@@ -4,17 +4,21 @@
 
 Overseer is an AI CLI development assistant for tmux-based coding workflows.
 
-Run `overseer` to enter a single TUI for monitoring, analysis, command input, assistant logs, audit indexes, skill/plugin counts, call logs, and development knowledge state. Its development loop covers planning, implementation, validation, debugging, review, and learning.
+Run `overseer <tmux-session>` to enter a single TUI for one tmux session with monitoring, analysis, command input, assistant logs, audit indexes, skill/plugin counts, call logs, and development knowledge state. Its development loop covers planning, implementation, validation, debugging, review, and learning.
 
 ### Features
 
-- Auto-assists AI CLI panes running inside tmux
+- Auto-assists AI CLI panes in one specified tmux session
 - Starts directly into a unified monitoring TUI
 - Shows skill count, plugin count, call count, call logs, audit index, analysis index, and knowledge index
 - Supports a development loop: plan, implement, validate, debug, review, learn
 - Captures status, event logs, inbox notes, and run history
 - Supports queued development tasks through a long-running agent mode
-- Proposes prompt injections through an approval queue
+- Creates local checkpoints before autonomous patches and supports restore
+- Scores completion and writes acceptance criteria after runs
+- Supports `@file` context references, stale-write guards, diff scope checks, health checks, provenance logs, and shell hooks
+- Tracks request patterns and runs prioritized idle product-completeness work after 10 minutes
+- Records prompt injections through the injection queue
 - Reads Claude Code and Codex context conservatively
 - Stores local runtime state in `.overseer/`
 
@@ -28,7 +32,15 @@ npm run build
 ### Usage
 
 ```bash
-overseer
+overseer <tmux-session>
+overseer goal <task>
+overseer checkpoint list
+overseer checkpoint restore <id>
+overseer done [dir]
+overseer doctor [dir]
+overseer provenance [dir]
+overseer tmux panes <tmux-session>
+overseer tmux watch <tmux-session> --once
 ```
 
 Inside the TUI:
@@ -39,6 +51,7 @@ Inside the TUI:
 /knowledge
 /logs
 /run <task>
+/goal <task>
 /scan
 /approve <id>
 /deny <id>
@@ -54,6 +67,9 @@ Supported environment variables use the `OVERSEER_` prefix, including:
 - `OVERSEER_WATCH_INTERVAL_MS`
 - `OVERSEER_INJECT_ENABLED`
 - `OVERSEER_INJECT_COOLDOWN_MS`
+- `OVERSEER_IDLE_SCHEDULER_ENABLED`
+- `OVERSEER_IDLE_THRESHOLD_MS`
+- `OVERSEER_IDLE_SCHEDULER_INTERVAL_MS`
 - `OVERSEER_ALLOWED_SESSIONS`
 - `OVERSEER_MAX_PROMPT_TOKENS`
 - `OVERSEER_MAX_CONTEXT_TOKENS`
@@ -62,17 +78,21 @@ Supported environment variables use the `OVERSEER_` prefix, including:
 
 Overseer는 tmux 기반 코딩 워크플로우를 위한 AI CLI 개발 어시스턴트입니다.
 
-`overseer`를 실행하면 단일 TUI로 바로 진입합니다. 이 화면에서 모니터링, 분석, 명령 입력, 어시스턴트 로그, 감사 지수, skill/plugin 수, 호출 로그, 개발 지식화 상태를 모두 확인합니다. 개발 루프는 계획, 구현, 검증, 디버깅, 리뷰, 학습 흐름을 기준으로 합니다.
+`overseer <tmux-session>`를 실행하면 지정한 tmux 세션 1개를 대상으로 단일 TUI에 진입합니다. 이 화면에서 모니터링, 분석, 명령 입력, 어시스턴트 로그, 감사 지수, skill/plugin 수, 호출 로그, 개발 지식화 상태를 모두 확인합니다. 개발 루프는 계획, 구현, 검증, 디버깅, 리뷰, 학습 흐름을 기준으로 합니다.
 
 ### 주요 기능
 
-- tmux 안의 AI CLI pane 자동 감시
+- 지정한 tmux 세션 안의 AI CLI pane 감시
 - 단일 실행으로 통합 모니터링 TUI 진입
 - skill 수, plugin 수, 호출 수, 호출 로그, 감사/분석/지식 지수 표시
 - 계획, 구현, 검증, 디버깅, 리뷰, 학습 개발 루프 지원
 - 상태, 이벤트 로그, inbox 노트, 실행 기록 확인
 - 큐 기반 개발 작업 및 장기 실행 에이전트 모드 지원
-- 승인 큐 기반 prompt injection 제안
+- 자동 패치 전 로컬 체크포인트 생성 및 복구 지원
+- 실행 후 완료 점수와 acceptance criteria 기록
+- `@file` 컨텍스트 참조, stale-write 방지, diff 범위 검사, health check, provenance 기록, shell hook 지원
+- 요청 패턴과 backlog를 기준으로 10분 유휴 시 제품 완성도 작업 자동 실행
+- injection queue 기반 prompt injection 기록
 - Claude Code와 Codex 컨텍스트를 읽기 전용으로 보수적으로 활용
 - 로컬 런타임 상태를 `.overseer/`에 저장
 
@@ -86,7 +106,15 @@ npm run build
 ### 사용법
 
 ```bash
-overseer
+overseer <tmux-session>
+overseer goal <task>
+overseer checkpoint list
+overseer checkpoint restore <id>
+overseer done [dir]
+overseer doctor [dir]
+overseer provenance [dir]
+overseer tmux panes <tmux-session>
+overseer tmux watch <tmux-session> --once
 ```
 
 TUI 안에서 사용하는 명령:
@@ -97,6 +125,7 @@ TUI 안에서 사용하는 명령:
 /knowledge
 /logs
 /run <task>
+/goal <task>
 /scan
 /approve <id>
 /deny <id>

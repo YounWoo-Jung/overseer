@@ -24,6 +24,14 @@ export interface ProjectContext {
   mistakes: string;
   learning: string;
   skills: { name: string; content: string }[];
+  referencedFiles?: FileSnapshot[];
+  contextWarnings?: string[];
+}
+
+export interface FileSnapshot {
+  path: string;
+  mtimeMs: number;
+  size: number;
 }
 
 export interface RunInput {

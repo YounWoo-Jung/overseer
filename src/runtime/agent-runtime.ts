@@ -5,6 +5,7 @@ import type { RunResult } from '../types.js';
 import { observeProject } from './observer.js';
 import { loadAssistantConfig } from './config.js';
 import { recordEvent } from '../state/event-store.js';
+import { enqueueCommand } from './command-lane.js';
 
 const STATE_DIR = '.overseer';
 const QUEUE_DIR = 'queue';
@@ -23,6 +24,10 @@ export interface AgentJob {
   startedAt?: string;
   finishedAt?: string;
   state: AgentJobState;
+  lastPhase?: string;
+  lastEvent?: string;
+  recoveredAt?: string;
+  recoveryCount?: number;
 }
 
 export interface AgentJobResult {
@@ -140,6 +145,36 @@ function queuedJobPaths(projectDir: string): string[] {
   return readdirJson(dir(projectDir, QUEUE_DIR));
 }
 
+function recoverInterruptedJobs(projectDir: string, onLog?: (message: string) => void): number {
+  let recovered = 0;
+  for (const runningPath of readdirJson(dir(projectDir, RUNNING_DIR))) {
+    const loaded = safeReadJson<AgentJob>(runningPath);
+    if (!loaded?.task) {
+      unlinkSync(runningPath);
+      continue;
+    }
+    const id = loaded.id || basename(runningPath, '.json');
+    const job: AgentJob = {
+      ...loaded,
+      id,
+      state: 'queued',
+      recoveredAt: new Date().toISOString(),
+      recoveryCount: (loaded.recoveryCount ?? 0) + 1,
+    };
+    writeJson(jobFile(projectDir, 'queued', id), job);
+    unlinkSync(runningPath);
+    recovered += 1;
+    onLog?.(`job recovered: ${id}${job.lastPhase ? ` from ${job.lastPhase}` : ''}`);
+    recordEvent(projectDir, {
+      type: 'queue.recovered',
+      severity: 'warning',
+      provenance: { source: 'daemon' },
+      payload: { jobId: id, task: job.task, lastPhase: job.lastPhase, recoveryCount: job.recoveryCount },
+    });
+  }
+  return recovered;
+}
+
 async function runJob(projectDir: string, queuedPath: string, onLog?: (message: string) => void): Promise<void> {
   const loaded = safeReadJson<AgentJob>(queuedPath);
   if (!loaded?.task) {
@@ -166,7 +201,17 @@ async function runJob(projectDir: string, queuedPath: string, onLog?: (message: 
       task: job.task,
       projectDir: job.projectDir,
       maxIterations: job.maxIterations,
-      onEvent: (event) => onLog?.(`[${event.phase}] ${event.message}`),
+      onEvent: (event) => {
+        if (existsSync(runningPath)) {
+          writeJson(runningPath, {
+            ...job,
+            state: 'running',
+            lastPhase: event.phase,
+            lastEvent: event.message,
+          });
+        }
+        onLog?.(`[${event.phase}] ${event.message}`);
+      },
     });
     const finished: AgentJob = {
       ...job,
@@ -206,6 +251,7 @@ export async function runAgentRuntime(input: {
   const observeIntervalMs = input.observeIntervalMs ?? Math.max(5000, config.watchIntervalMs * 2);
   let lastObserved = 0;
   ensureAgentState(root);
+  recoverInterruptedJobs(root, input.onLog);
   writeStatus(root, { state: 'starting' });
   recordEvent(root, {
     type: 'daemon.started',
@@ -220,7 +266,7 @@ export async function runAgentRuntime(input: {
     if (pending.length === 0) {
       if (Date.now() - lastObserved > observeIntervalMs) {
         lastObserved = Date.now();
-        await observeProject(root, { onLog: input.onLog });
+        await enqueueCommand('scan', () => observeProject(root, { onLog: input.onLog }));
       }
       writeStatus(root, { state: 'idle' });
       if (input.once) break;
@@ -230,7 +276,7 @@ export async function runAgentRuntime(input: {
 
     for (const path of pending) {
       if (input.shouldStop?.()) break;
-      await runJob(root, path, input.onLog);
+      await enqueueCommand('run', () => runJob(root, path, input.onLog));
     }
     if (input.once) break;
   }

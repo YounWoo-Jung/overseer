@@ -3,15 +3,18 @@ import { appendAssist, appendHistory } from '../state/history-store.js';
 import { recordEvent } from '../state/event-store.js';
 import { captureTmuxPanes, hasTmux, type TmuxPaneSnapshot } from './tmux.js';
 import { loadAssistantConfig } from './config.js';
-import { classifyPaneText } from './classifier.js';
+import { classifyPaneText, type ClassifiedSignal } from './classifier.js';
 import { compactText } from './token-budget.js';
 import { buildTmuxAssistInsight } from './tmux-assist.js';
 import { proposeInjection } from './injector.js';
 import { readClaudeCodeStatus } from './claude-code.js';
 import { readCodexStatus } from './codex-context.js';
+import { maybeScheduleIdleDevelopment, observeSessionRequestPatterns, type IdleSchedulerResult } from './idle-scheduler.js';
+import { enqueueCommand } from './command-lane.js';
 
 interface AutoAssistantInput {
   projectDir: string;
+  tmuxSessionName: string;
   once?: boolean;
   onLog?: (message: string) => void;
   shouldStop?: () => boolean;
@@ -21,9 +24,22 @@ export interface AutoAssistantScanResult {
   panes: number;
   signals: number;
   notes: number;
+  requests: number;
+  idle: IdleSchedulerResult['state'];
+  targets: AutoAssistantPaneStatus[];
+  goal?: string;
+  priority?: number;
 }
 
-const AI_NAMES = ['claude', 'codex', 'opencode', 'gemini'];
+export interface AutoAssistantPaneStatus {
+  paneId: string;
+  command: string;
+  active: boolean;
+  currentPath: string;
+  lastLine: string;
+}
+
+const AI_NAMES = ['claude', 'codex'];
 
 export async function runAutoAssistant(input: AutoAssistantInput): Promise<void> {
   const config = loadAssistantConfig(input.projectDir);
@@ -32,8 +48,8 @@ export async function runAutoAssistant(input: AutoAssistantInput): Promise<void>
   input.onLog?.('auto assistant started');
 
   do {
-    const result = scanAutoAssistantOnce(input.projectDir, seen);
-    input.onLog?.(`ai-cli: panes ${result.panes} | signals ${result.signals} | notes ${result.notes}`);
+    const result = await enqueueCommand('scan', async () => scanAutoAssistantOnce(input.projectDir, seen, input.tmuxSessionName));
+    input.onLog?.(`ai-cli: panes ${result.panes} | signals ${result.signals} | requests ${result.requests} | idle ${result.idle}${result.goal ? ` | goal ${result.priority ?? 0}` : ''} | notes ${result.notes}`);
     if (input.once) break;
     await new Promise((resolveTimer) => setTimeout(resolveTimer, intervalMs));
   } while (!input.shouldStop?.());
@@ -41,14 +57,15 @@ export async function runAutoAssistant(input: AutoAssistantInput): Promise<void>
   input.onLog?.('auto assistant stopped');
 }
 
-export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): AutoAssistantScanResult {
+export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>, tmuxSessionName: string): AutoAssistantScanResult {
   const claude = readClaudeCodeStatus(projectDir);
   const codex = readCodexStatus();
-  const panes = hasTmux() ? captureTmuxPanes('', loadAssistantConfig(projectDir).maxCaptureLines).filter(isAiPane) : [];
+  const panes = hasTmux() ? captureTmuxPanes(tmuxSessionName, loadAssistantConfig(projectDir).maxCaptureLines).filter(isAiPane) : [];
   let signals = 0;
   let notes = 0;
+  const requests = observeSessionRequestPatterns(projectDir, panes);
 
-  const scanKey = hashText(`scan:${panes.map((pane) => pane.paneId).join(',')}`);
+  const scanKey = hashText(`scan:${tmuxSessionName}:${panes.map((pane) => pane.paneId).join(',')}`);
   if (!seen.has(scanKey)) {
     seen.add(scanKey);
     recordEvent(projectDir, {
@@ -56,6 +73,7 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): Au
       severity: 'info',
       provenance: { source: 'system' },
       payload: {
+        tmuxSessionName,
         panes: panes.length,
         claude: { found: claude.exists, memory: claude.projectMemoryFiles, dangerousSkip: claude.skipDangerousModePermissionPrompt },
         codex: { found: codex.exists, hooks: codex.hooksEnabled, memories: codex.memoriesEnabled },
@@ -111,10 +129,11 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): Au
       }
     }
 
-    for (const signal of classifyPaneText(pane.content)) {
+    const paneSignals = classifyPaneText(pane.content);
+    signals += paneSignals.length;
+    for (const signal of paneSignals) {
       const signalKey = `signal:${pane.paneId}:${signal.type}:${signal.evidence}`;
       if (!remember(seen, signalKey)) continue;
-      signals += 1;
       recordEvent(projectDir, {
         type: signal.type,
         severity: signal.severity,
@@ -130,7 +149,7 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): Au
         `Pane: ${pane.paneId} (${pane.sessionName})`,
         ...insight.assistLines,
       ]);
-      if (signal.severity !== 'info') {
+      if (shouldProposeInjectionForSignal(signal)) {
         proposeInjection(projectDir, {
           paneId: pane.paneId,
           sessionName: pane.sessionName,
@@ -147,11 +166,33 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>): Au
     appendHistory(projectDir, {
       kind: 'note',
       title: 'No running AI CLI detected',
-      detail: 'Claude/Codex local context is available, but no AI CLI running inside tmux was detected.',
+      detail: `Claude/Codex local context is available, but no AI CLI running inside tmux session ${tmuxSessionName} was detected.`,
     });
   }
 
-  return { panes: panes.length, signals, notes };
+  const idle = maybeScheduleIdleDevelopment(projectDir, panes);
+  if (idle.state === 'proposed' || idle.state === 'sent' || idle.state === 'blocked') notes += 1;
+
+  return {
+    panes: panes.length,
+    signals,
+    notes,
+    requests,
+    idle: idle.state,
+    targets: panes.map((pane) => ({
+      paneId: pane.paneId,
+      command: pane.currentCommand,
+      active: pane.active,
+      currentPath: pane.currentPath,
+      lastLine: compactText(pane.lastLine, 120, 'tail'),
+    })),
+    goal: idle.goal,
+    priority: idle.priority,
+  };
+}
+
+export function shouldProposeInjectionForSignal(signal: Pick<ClassifiedSignal, 'severity' | 'type'>): boolean {
+  return signal.severity !== 'info' && signal.type !== 'permission.required';
 }
 
 function inferPaneKind(pane: TmuxPaneSnapshot): string {
@@ -165,12 +206,9 @@ function inferCommandKind(command: string, args: string): string {
   if (direct) return direct;
   if (cmd === 'node') {
     if (/\/bin\/codex\b|@openai\/codex/.test(text)) return 'codex';
-    if (/\/bin\/gemini\b/.test(text)) return 'gemini';
-    if (/\/bin\/opencode\b/.test(text)) return 'opencode';
   }
   if (/^claude(\s|$)/.test(text)) return 'claude';
   if (/^codex(\s|$)/.test(text)) return 'codex';
-  if (/^gemini(\s|$)/.test(text)) return 'gemini';
   return '';
 }
 

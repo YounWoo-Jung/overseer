@@ -6,6 +6,7 @@ import { buildSkillStatsContext } from '../state/skill-stats.js';
 import type { ProjectContext } from '../types.js';
 import { buildClaudeCodeContextBlock } from './claude-code.js';
 import { buildCodexContextBlock } from './codex-context.js';
+import { expandContextReferences } from './context-references.js';
 import { compactText, readTokenBudget } from './token-budget.js';
 
 function readOptional(path: string): string {
@@ -19,7 +20,10 @@ export function loadProjectContext(projectDir: string, task = ''): ProjectContex
   const memory = readOptional(join(root, 'MEMORY.md'));
   const summary = readOptional(join(root, 'SUMMARY.md'));
   const mistakes = readOptional(join(root, 'MISTAKE.md'));
-  const matchContext = [task, memory, summary, mistakes].filter(Boolean).join('\n\n');
+  const requestPatterns = readOptional(join(root, '.overseer', 'request-patterns.md'));
+  const idleBacklog = readOptional(join(root, '.overseer', 'backlog.json'));
+  const refs = expandContextReferences(root, task);
+  const matchContext = [task, memory, summary, mistakes, requestPatterns].filter(Boolean).join('\n\n');
   const availableSkills = buildAvailableSkillsBlock(root, matchContext);
 
   return {
@@ -31,11 +35,17 @@ export function loadProjectContext(projectDir: string, task = ''): ProjectContex
     learning: [
       task ? buildLearningContext(root, task) : '',
       buildSkillStatsContext(root),
+      requestPatterns && `# request patterns\n${compactText(requestPatterns, 700, 'tail')}`,
+      idleBacklog && `# idle backlog\n${compactText(idleBacklog, 900, 'tail')}`,
+      refs.block,
+      refs.warnings.length && `# context reference warnings\n${refs.warnings.map((item) => `- ${item}`).join('\n')}`,
       availableSkills,
       buildClaudeCodeContextBlock(root, matchContext),
       buildCodexContextBlock(),
     ].filter(Boolean).join('\n\n'),
     skills: loadMatchedSkills(root, matchContext),
+    referencedFiles: refs.files,
+    contextWarnings: refs.warnings,
   };
 }
 

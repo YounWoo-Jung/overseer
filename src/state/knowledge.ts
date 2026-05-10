@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunResult } from '../types.js';
+import { writeCompletionArtifacts } from '../runtime/completion.js';
 import { appendRunRecord } from './learning-store.js';
 import { evolveSkills } from './skill-evolver.js';
 import { updateSkillStats } from './skill-stats.js';
@@ -17,6 +18,7 @@ export function recordLearning(projectDir: string, result: RunResult): void {
   const summaryPath = join(projectDir, 'SUMMARY.md');
   const memoryPath = join(projectDir, 'MEMORY.md');
   const mistakePath = join(projectDir, 'MISTAKE.md');
+  const verdict = writeCompletionArtifacts(projectDir, result);
 
   ensureFile(summaryPath, '');
   appendFileSync(summaryPath, [
@@ -29,6 +31,7 @@ export function recordLearning(projectDir: string, result: RunResult): void {
     '- See git diff for changed files.',
     '## Notes',
     `- Iterations: ${result.iterations}`,
+    `- Completion: ${verdict.summary}`,
     '',
   ].join('\n'));
 

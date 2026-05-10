@@ -1,7 +1,10 @@
 {
   "maxCaptureLines": 200,
   "watchIntervalMs": 5000,
-  "injectEnabled": false,
+  "injectEnabled": true,
   "injectCooldownMs": 120000,
+  "idleSchedulerEnabled": true,
+  "idleThresholdMs": 600000,
+  "idleSchedulerIntervalMs": 600000,
   "allowedSessions": []
 }

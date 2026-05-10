@@ -51,10 +51,9 @@ export function listTmuxSessions(): TmuxSessionInfo[] {
   });
 }
 
-export function captureTmuxPanes(target = '', maxLines = 200): TmuxPaneSnapshot[] {
-  const args = ['list-panes'];
-  if (target) args.push('-t', target);
-  else args.push('-a');
+export function captureTmuxPanes(target: string, maxLines = 200): TmuxPaneSnapshot[] {
+  if (!target) return [];
+  const args = ['list-panes', '-t', target];
   args.push('-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{history_size}\t#{history_limit}');
   let output = '';
   try {

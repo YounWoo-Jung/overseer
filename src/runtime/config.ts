@@ -6,14 +6,20 @@ export interface AssistantConfig {
   watchIntervalMs: number;
   injectEnabled: boolean;
   injectCooldownMs: number;
+  idleSchedulerEnabled: boolean;
+  idleThresholdMs: number;
+  idleSchedulerIntervalMs: number;
   allowedSessions: string[];
 }
 
 const DEFAULT_CONFIG: AssistantConfig = {
   maxCaptureLines: 200,
   watchIntervalMs: 5000,
-  injectEnabled: false,
+  injectEnabled: true,
   injectCooldownMs: 120_000,
+  idleSchedulerEnabled: true,
+  idleThresholdMs: 600_000,
+  idleSchedulerIntervalMs: 600_000,
   allowedSessions: [],
 };
 
@@ -32,6 +38,9 @@ export function loadAssistantConfig(projectDir: string): AssistantConfig {
     watchIntervalMs: readNumber('OVERSEER_WATCH_INTERVAL_MS', fileConfig.watchIntervalMs, DEFAULT_CONFIG.watchIntervalMs),
     injectEnabled: readBool('OVERSEER_INJECT_ENABLED', fileConfig.injectEnabled, DEFAULT_CONFIG.injectEnabled),
     injectCooldownMs: readNumber('OVERSEER_INJECT_COOLDOWN_MS', fileConfig.injectCooldownMs, DEFAULT_CONFIG.injectCooldownMs),
+    idleSchedulerEnabled: readBool('OVERSEER_IDLE_SCHEDULER_ENABLED', fileConfig.idleSchedulerEnabled, DEFAULT_CONFIG.idleSchedulerEnabled),
+    idleThresholdMs: readNumber('OVERSEER_IDLE_THRESHOLD_MS', fileConfig.idleThresholdMs, DEFAULT_CONFIG.idleThresholdMs),
+    idleSchedulerIntervalMs: readNumber('OVERSEER_IDLE_SCHEDULER_INTERVAL_MS', fileConfig.idleSchedulerIntervalMs, DEFAULT_CONFIG.idleSchedulerIntervalMs),
     allowedSessions: readList('OVERSEER_ALLOWED_SESSIONS', fileConfig.allowedSessions, DEFAULT_CONFIG.allowedSessions),
   };
 }
