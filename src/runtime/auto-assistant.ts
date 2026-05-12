@@ -9,8 +9,9 @@ import { buildTmuxAssistInsight } from './tmux-assist.js';
 import { proposeInjection } from './injector.js';
 import { readClaudeCodeStatus } from './claude-code.js';
 import { readCodexStatus } from './codex-context.js';
-import { maybeScheduleIdleDevelopment, observeSessionRequestPatterns, type IdleSchedulerResult } from './idle-scheduler.js';
+import { observeSessionRequestPatterns, type IdleSchedulerResult } from './idle-scheduler.js';
 import { enqueueCommand } from './command-lane.js';
+import { maybeAutopilotIdlePane } from './idle-autopilot.js';
 
 interface AutoAssistantInput {
   projectDir: string;
@@ -27,8 +28,6 @@ export interface AutoAssistantScanResult {
   requests: number;
   idle: IdleSchedulerResult['state'];
   targets: AutoAssistantPaneStatus[];
-  goal?: string;
-  priority?: number;
 }
 
 export interface AutoAssistantPaneStatus {
@@ -49,7 +48,7 @@ export async function runAutoAssistant(input: AutoAssistantInput): Promise<void>
 
   do {
     const result = await enqueueCommand('scan', async () => scanAutoAssistantOnce(input.projectDir, seen, input.tmuxSessionName));
-    input.onLog?.(`ai-cli: panes ${result.panes} | signals ${result.signals} | requests ${result.requests} | idle ${result.idle}${result.goal ? ` | goal ${result.priority ?? 0}` : ''} | notes ${result.notes}`);
+    input.onLog?.(`ai-cli: panes ${result.panes} | signals ${result.signals} | requests ${result.requests} | idle ${result.idle} | notes ${result.notes}`);
     if (input.once) break;
     await new Promise((resolveTimer) => setTimeout(resolveTimer, intervalMs));
   } while (!input.shouldStop?.());
@@ -170,15 +169,15 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>, tmu
     });
   }
 
-  const idle = maybeScheduleIdleDevelopment(projectDir, panes);
-  if (idle.state === 'proposed' || idle.state === 'sent' || idle.state === 'blocked') notes += 1;
+  const autopilot = maybeAutopilotIdlePane(projectDir, panes);
+  if (autopilot.fired > 0) notes += autopilot.fired;
 
   return {
     panes: panes.length,
     signals,
     notes,
     requests,
-    idle: idle.state,
+    idle: 'waiting' as IdleSchedulerResult['state'],
     targets: panes.map((pane) => ({
       paneId: pane.paneId,
       command: pane.currentCommand,
@@ -186,8 +185,6 @@ export function scanAutoAssistantOnce(projectDir: string, seen: Set<string>, tmu
       currentPath: pane.currentPath,
       lastLine: compactText(pane.lastLine, 120, 'tail'),
     })),
-    goal: idle.goal,
-    priority: idle.priority,
   };
 }
 

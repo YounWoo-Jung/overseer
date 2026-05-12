@@ -10,6 +10,9 @@ export interface AssistantConfig {
   idleThresholdMs: number;
   idleSchedulerIntervalMs: number;
   allowedSessions: string[];
+  idleAutopilotEnabled: boolean;
+  idleAutopilotThresholdMs: number;
+  idleAutopilotCooldownMs: number;
 }
 
 const DEFAULT_CONFIG: AssistantConfig = {
@@ -21,6 +24,9 @@ const DEFAULT_CONFIG: AssistantConfig = {
   idleThresholdMs: 600_000,
   idleSchedulerIntervalMs: 600_000,
   allowedSessions: [],
+  idleAutopilotEnabled: true,
+  idleAutopilotThresholdMs: 600_000,
+  idleAutopilotCooldownMs: 1_200_000,
 };
 
 export function loadAssistantConfig(projectDir: string): AssistantConfig {
@@ -42,6 +48,9 @@ export function loadAssistantConfig(projectDir: string): AssistantConfig {
     idleThresholdMs: readNumber('OVERSEER_IDLE_THRESHOLD_MS', fileConfig.idleThresholdMs, DEFAULT_CONFIG.idleThresholdMs),
     idleSchedulerIntervalMs: readNumber('OVERSEER_IDLE_SCHEDULER_INTERVAL_MS', fileConfig.idleSchedulerIntervalMs, DEFAULT_CONFIG.idleSchedulerIntervalMs),
     allowedSessions: readList('OVERSEER_ALLOWED_SESSIONS', fileConfig.allowedSessions, DEFAULT_CONFIG.allowedSessions),
+    idleAutopilotEnabled: readBool('OVERSEER_IDLE_AUTOPILOT_ENABLED', fileConfig.idleAutopilotEnabled, DEFAULT_CONFIG.idleAutopilotEnabled),
+    idleAutopilotThresholdMs: readNumber('OVERSEER_IDLE_AUTOPILOT_THRESHOLD_MS', fileConfig.idleAutopilotThresholdMs, DEFAULT_CONFIG.idleAutopilotThresholdMs),
+    idleAutopilotCooldownMs: readNumber('OVERSEER_IDLE_AUTOPILOT_COOLDOWN_MS', fileConfig.idleAutopilotCooldownMs, DEFAULT_CONFIG.idleAutopilotCooldownMs),
   };
 }
 

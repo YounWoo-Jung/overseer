@@ -18,6 +18,7 @@ Run `overseer <tmux-session>` to enter a single TUI for one tmux session with mo
 - Scores completion and writes acceptance criteria after runs
 - Supports `@file` context references, stale-write guards, diff scope checks, health checks, provenance logs, and shell hooks
 - Tracks request patterns and runs prioritized idle product-completeness work after 10 minutes
+- Sends an idle autopilot nudge into the monitored AI CLI pane after configured idleness without input or output
 - Records prompt injections through the injection queue
 - Reads Claude Code and Codex context conservatively
 - Stores local runtime state in `.overseer/`
@@ -70,6 +71,9 @@ Supported environment variables use the `OVERSEER_` prefix, including:
 - `OVERSEER_IDLE_SCHEDULER_ENABLED`
 - `OVERSEER_IDLE_THRESHOLD_MS`
 - `OVERSEER_IDLE_SCHEDULER_INTERVAL_MS`
+- `OVERSEER_IDLE_AUTOPILOT_ENABLED`
+- `OVERSEER_IDLE_AUTOPILOT_THRESHOLD_MS`
+- `OVERSEER_IDLE_AUTOPILOT_COOLDOWN_MS`
 - `OVERSEER_ALLOWED_SESSIONS`
 - `OVERSEER_MAX_PROMPT_TOKENS`
 - `OVERSEER_MAX_CONTEXT_TOKENS`
@@ -92,6 +96,7 @@ Overseer는 tmux 기반 코딩 워크플로우를 위한 AI CLI 개발 어시스
 - 실행 후 완료 점수와 acceptance criteria 기록
 - `@file` 컨텍스트 참조, stale-write 방지, diff 범위 검사, health check, provenance 기록, shell hook 지원
 - 요청 패턴과 backlog를 기준으로 10분 유휴 시 제품 완성도 작업 자동 실행
+- 감시 중인 AI CLI pane이 설정된 시간 동안 입출력이 없으면 작업을 계속 진행하도록 자동 프롬프트 전송
 - injection queue 기반 prompt injection 기록
 - Claude Code와 Codex 컨텍스트를 읽기 전용으로 보수적으로 활용
 - 로컬 런타임 상태를 `.overseer/`에 저장

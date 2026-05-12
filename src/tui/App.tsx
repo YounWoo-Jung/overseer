@@ -1,11 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp } from 'ink';
 import TextInput from 'ink-text-input';
-import { runAutonomousTask } from '../orchestrator.js';
-import { availableProvider } from '../llm/provider.js';
 import { readRunRecords } from '../state/learning-store.js';
 import { getRankedSkillStats } from '../state/skill-stats.js';
-import { listAgentJobs, readAgentStatus, submitAgentJob } from '../runtime/agent-runtime.js';
 import { readHistory, readProjectProfile } from '../state/history-store.js';
 import { readEvents, type AssistantEventRecord } from '../state/event-store.js';
 import { indexSkills } from '../state/skill-registry.js';
@@ -17,36 +14,8 @@ import { readIdleSchedulerSnapshot, recordUserRequestPattern } from '../runtime/
 import { readTokenBudget } from '../runtime/token-budget.js';
 import { getLaneStats } from '../runtime/command-lane.js';
 import { recordProvenance, summarizeProvenance } from '../runtime/provenance.js';
-import type { AgentEvent, AgentPhase, RunResult } from '../types.js';
 
-type ViewMode = 'dashboard' | 'calls' | 'audit' | 'knowledge' | 'logs' | 'runs' | 'skills' | 'queue' | 'inbox' | 'inject' | 'plan' | 'help';
-
-const PHASES: AgentPhase[] = ['context', 'plan', 'implement', 'validate', 'debug', 'review', 'learn', 'done'];
-
-function phaseColor(phase: string): string {
-  if (phase === 'done') return 'green';
-  if (phase === 'debug') return 'yellow';
-  if (phase === 'validate') return 'cyan';
-  if (phase === 'review') return 'magenta';
-  return 'white';
-}
-
-function phaseMark(event: AgentEvent): string {
-  if (event.success === false) return 'x';
-  if (event.success === true) return '+';
-  if (event.phase === 'debug') return '!';
-  return '-';
-}
-
-function progressBar(events: AgentEvent[]): string {
-  const current = events.at(-1)?.phase;
-  const currentIndex = current ? PHASES.indexOf(current) : -1;
-  return PHASES.map((phase, index) => {
-    if (index < currentIndex) return '#';
-    if (index === currentIndex) return '>';
-    return '-';
-  }).join('');
-}
+type ViewMode = 'dashboard' | 'calls' | 'audit' | 'knowledge' | 'logs' | 'runs' | 'skills' | 'inbox' | 'inject' | 'help';
 
 function truncate(text: string, length: number): string {
   return text.length > length ? `${text.slice(0, Math.max(0, length - 1))}.` : text;
@@ -87,14 +56,8 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
   const { exit } = useApp();
   const seenRef = useRef(new Set<string>());
   const [task, setTask] = useState('');
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<RunResult | null>(null);
   const [view, setView] = useState<ViewMode>('dashboard');
   const [notice, setNotice] = useState('type /help for TUI commands');
-  const [activeTask, setActiveTask] = useState('');
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [elapsedSec, setElapsedSec] = useState(0);
   const [refreshTick, setRefreshTick] = useState(Date.now());
   const [scanResult, setScanResult] = useState<AutoAssistantScanResult>({ panes: 0, signals: 0, notes: 0, requests: 0, idle: 'waiting', targets: [] });
   const [lastScanAt, setLastScanAt] = useState('');
@@ -104,29 +67,18 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
   const runs = readRunRecords(projectDir);
   const skillStats = getRankedSkillStats(projectDir);
   const registeredSkills = indexSkills(projectDir);
-  const jobs = listAgentJobs(projectDir);
-  const status = readAgentStatus(projectDir);
   const history = readHistory(projectDir, 50);
   const eventLog = readEvents(projectDir, 500);
   const injections = listInjections(projectDir, 100);
   const profile = readProjectProfile(projectDir);
   const budget = readTokenBudget();
-  const provider = availableProvider();
   const claude = readClaudeCodeStatus(projectDir);
   const codex = readCodexStatus();
   const idleSnapshot = readIdleSchedulerSnapshot(projectDir);
   const laneStats = getLaneStats();
   const provenanceStats = summarizeProvenance(projectDir);
-  const lastPlanEvent = useMemo(() => [...events].reverse().find((event) => event.phase === 'plan'), [events]);
-  const currentPlan = result?.plan.steps.length
-    ? result.plan.steps
-    : lastPlanEvent
-      ? [lastPlanEvent.message]
-      : [];
   const successCount = runs.filter((run) => run.success).length;
   const failedCount = runs.length - successCount;
-  const queuedCount = jobs.filter((item) => item.job.state === 'queued').length;
-  const runningCount = jobs.filter((item) => item.job.state === 'running').length;
   const warningCount = eventLog.filter((event) => event.severity === 'warning').length;
   const errorCount = eventLog.filter((event) => event.severity === 'error' || event.severity === 'critical').length;
   const proposedInjections = injections.filter((item) => item.state === 'proposed').length;
@@ -143,12 +95,6 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
   });
 
   useEffect(() => {
-    if (!running || startedAt === null) return;
-    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [running, startedAt]);
-
-  useEffect(() => {
     let stopped = false;
     const refresh = () => {
       try {
@@ -158,10 +104,13 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
         setLastScanAt(new Date().toLocaleTimeString());
         setScanCount((count) => count + 1);
         setRefreshTick(Date.now());
-        setOperationLog((prev) => [
-          logLine(`scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle}${next.goal ? ` priority=${next.priority ?? 0}` : ''} notes=${next.notes}`),
-          ...prev,
-        ].slice(0, 40));
+        const meaningful = next.signals > 0 || next.requests > 0 || next.notes > 0;
+        if (meaningful) {
+          setOperationLog((prev) => [
+            logLine(`scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle} notes=${next.notes}`),
+            ...prev,
+          ].slice(0, 40));
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setOperationLog((prev) => [logLine(`scan failed: ${message}`), ...prev].slice(0, 40));
@@ -175,7 +124,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
     };
   }, [projectDir, tmuxSessionName]);
 
-  const submit = async (value: string) => {
+  const submit = (value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
     recordUserRequestPattern(projectDir, trimmed, 'tui');
@@ -192,13 +141,13 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
     }
     if (trimmed === '/status') {
       setView('dashboard');
-      setNotice(`agent ${status?.state ?? 'not started'}, queue ${queuedCount}, calls ${eventLog.length}`);
+      setNotice(`calls ${eventLog.length}`);
       setTask('');
       return;
     }
     if (
-      trimmed === '/runs' || trimmed === '/skills' || trimmed === '/queue' || trimmed === '/inbox'
-      || trimmed === '/plan' || trimmed === '/calls' || trimmed === '/audit' || trimmed === '/knowledge'
+      trimmed === '/runs' || trimmed === '/skills' || trimmed === '/inbox'
+      || trimmed === '/calls' || trimmed === '/audit' || trimmed === '/knowledge'
       || trimmed === '/logs' || trimmed === '/inject'
     ) {
       setView(trimmed.slice(1) as ViewMode);
@@ -212,7 +161,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
       setLastScanAt(new Date().toLocaleTimeString());
       setScanCount((count) => count + 1);
       setRefreshTick(Date.now());
-      setOperationLog((prev) => [logLine(`manual scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle}${next.goal ? ` priority=${next.priority ?? 0}` : ''} notes=${next.notes}`), ...prev].slice(0, 40));
+      setOperationLog((prev) => [logLine(`manual scan panes=${next.panes} signals=${next.signals} requests=${next.requests} idle=${next.idle} notes=${next.notes}`), ...prev].slice(0, 40));
       setNotice('scan completed');
       setTask('');
       return;
@@ -233,58 +182,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
       setTask('');
       return;
     }
-    if (trimmed.startsWith('/run ')) {
-      const runTask = trimmed.slice('/run '.length).trim();
-      if (!runTask) {
-        setNotice('usage: /run <task>');
-        setTask('');
-        return;
-      }
-      setTask('');
-      setEvents([]);
-      setResult(null);
-      setRunning(true);
-      setStartedAt(Date.now());
-      setElapsedSec(0);
-      setActiveTask(runTask);
-      setView('plan');
-      setNotice(`running: ${runTask}`);
-      try {
-        const runResult = await runAutonomousTask({
-          task: runTask,
-          projectDir,
-          onEvent: (event) => setEvents((prev) => [...prev, event]),
-        });
-        setResult(runResult);
-        setNotice(`run ${runResult.success ? 'passed' : 'failed'}: ${runTask}`);
-        setView('runs');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setNotice(`run failed: ${message}`);
-      } finally {
-        setRunning(false);
-      }
-      return;
-    }
-    if (trimmed.startsWith('/goal ')) {
-      const goalTask = trimmed.slice('/goal '.length).trim();
-      if (!goalTask) {
-        setNotice('usage: /goal <task>');
-        setTask('');
-        return;
-      }
-      setTask('');
-      setEvents([]);
-      setResult(null);
-      setActiveTask(goalTask);
-      const job = submitAgentJob(projectDir, goalTask);
-      setView('queue');
-      setNotice(`goal queued ${job.id}`);
-      return;
-    }
     if (trimmed === '/clear') {
-      setEvents([]);
-      setResult(null);
       setOperationLog([]);
       setNotice('transcript cleared');
       setTask('');
@@ -292,12 +190,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
     }
 
     setTask('');
-    setEvents([]);
-    setResult(null);
-    setActiveTask(trimmed);
-    const job = submitAgentJob(projectDir, trimmed);
-    setView('queue');
-    setNotice(`queued ${job.id}`);
+    setNotice(`unknown command: ${trimmed}`);
   };
 
   return (
@@ -309,7 +202,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
         </Box>
         <Text color="gray">project: {projectDir}</Text>
         <Text color="gray">tmux session: {tmuxSessionName}</Text>
-        <Text color="gray">provider: {provider} | agent: {status?.state ?? 'not started'} | view: {view} | /help /calls /audit /knowledge /logs /run /goal /scan /exit</Text>
+        <Text color="gray">view: {view} | /help /calls /audit /knowledge /logs /scan /exit</Text>
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
@@ -323,14 +216,12 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
             <Text color="gray">last req: {idleSnapshot.lastUserRequestAt?.slice(11, 19) ?? 'none'}</Text>
             <Text color="gray">backlog: {idleSnapshot.openBacklog} | top: {idleSnapshot.topPriority ?? 0}</Text>
             <Text color="gray">calls: {eventLog.length} | warnings: {warningCount}</Text>
-            <Text color="gray">queue: {queuedCount} | running: {runningCount}</Text>
             <Text color="gray">lanes: scan {laneStats.scan.active ? 'active' : 'idle'}/{laneStats.scan.queued} run {laneStats.run.active ? 'active' : 'idle'}/{laneStats.run.queued}</Text>
             <Text color="gray">{profile ? `files: ${profile.fileCount}` : 'no profile yet'}</Text>
           </Box>
           <Box borderStyle="single" paddingX={1} flexDirection="column" width="34%">
             <Text bold>Development</Text>
             <Text color="gray">skills: {skillCount} | plugins: {pluginCount}</Text>
-            <Text color="gray">runs: {runs.length} | pass: {successCount} | fail: {failedCount}</Text>
             <Text color="gray">memory: {memoryCount} | history: {history.length}</Text>
             <Text color="gray">injections: {proposedInjections} pending</Text>
             <Text color="gray">inputs: tui {provenanceStats.tui} tmux {provenanceStats.tmux} cli {provenanceStats.cli}</Text>
@@ -341,8 +232,7 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
             <Text color={scoreColor(indexes.analysis)}>analysis: {indexes.analysis}</Text>
             <Text color={scoreColor(indexes.knowledge)}>knowledge: {indexes.knowledge}</Text>
             <Text color="gray">budget: {budget.maxPromptTokens}/{budget.maxContextTokens}</Text>
-            <Text color={running ? 'yellow' : 'gray'}>{progressBar(events)}</Text>
-            <Text color="gray">{activeTask ? truncate(activeTask, 36) : 'waiting'}</Text>
+            <Text color="gray">waiting</Text>
           </Box>
         </Box>
 
@@ -413,11 +303,6 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
               {skill.disabled ? 'x' : '+'} {skill.name} score={skill.score.toFixed(2)} runs={skill.runs} failures={skill.failures}
             </Text>
           ))}
-          {view === 'queue' && jobs.slice(-12).reverse().map((item) => (
-            <Text key={item.job.id} color={item.job.state === 'failed' ? 'red' : item.job.state === 'done' ? 'green' : 'yellow'}>
-              {item.job.state} {item.job.id} {truncate(item.job.task, 80)}
-            </Text>
-          ))}
           {view === 'inbox' && history.slice().reverse().map((item) => (
             <Text key={item.id} color="cyan">
               [{item.kind}] {truncate(item.title, 28)} - {truncate(item.detail, 80)}
@@ -428,9 +313,6 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
               {item.id} [{item.state}] risk={item.risk.level} pane={item.paneId} {truncate(item.reason, 70)}
             </Text>
           ))}
-          {view === 'plan' && currentPlan.map((step, index) => (
-            <Text key={`${step}-${index}`} color="cyan">{index + 1}. {step}</Text>
-          ))}
           {view === 'help' && (
             <Box flexDirection="column">
               <Text color="cyan">Single-entry TUI: monitor, inspect, and command from here.</Text>
@@ -439,17 +321,13 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
               <Text>/audit   Show audit index and risks</Text>
               <Text>/knowledge Show development pattern and knowledge state</Text>
               <Text>/logs    Show assistant operation log</Text>
-              <Text>/queue   Show assistant queue</Text>
               <Text>/inbox   Show monitoring and learning history</Text>
               <Text>/inject  Show injection proposals</Text>
               <Text>/approve &lt;id&gt; Approve injection proposal</Text>
               <Text>/deny &lt;id&gt; Deny injection proposal</Text>
-              <Text>/run &lt;task&gt; Run a development task now</Text>
-              <Text>/goal &lt;task&gt; Queue a product-completeness goal</Text>
               <Text>/scan    Run monitor scan now</Text>
               <Text>/runs    Show recent runs</Text>
               <Text>/skills  Show skill scores and disabled status</Text>
-              <Text>/plan    Show current or recent plan</Text>
               <Text>/clear   Clear current screen log</Text>
               <Text>/exit    Exit</Text>
             </Box>
@@ -457,14 +335,6 @@ export function App({ projectDir, tmuxSessionName }: { projectDir: string; tmuxS
           {view !== 'help' && eventLog.length === 0 && runs.length === 0 && operationLog.length === 0 && <Text color="gray">no activity yet</Text>}
         </Box>
 
-        {result && (
-          <Box borderStyle="single" paddingX={1} flexDirection="column" marginTop={1}>
-            <Text color={result.success ? 'green' : 'red'}>
-              result: {result.success ? 'success' : 'failed'} | iterations: {result.iterations} | skills: {result.skillsUsed.length}
-            </Text>
-            <Text color="gray">{truncate(result.review.replace(/\n+/g, ' '), 1000)}</Text>
-          </Box>
-        )}
       </Box>
 
       <Box marginTop={1} borderStyle="single" paddingX={1}>

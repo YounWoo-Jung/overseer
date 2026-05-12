@@ -2,14 +2,11 @@
 import React from 'react';
 import { render } from 'ink';
 import { resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { runAutonomousTask } from './orchestrator.js';
 import { App } from './tui/App.js';
 import { readRunRecords } from './state/learning-store.js';
 import { getRankedSkillStats } from './state/skill-stats.js';
-import { listAgentJobs, readAgentStatus, runAgentRuntime, submitAgentJob } from './runtime/agent-runtime.js';
 import { readHistory, readProjectProfile } from './state/history-store.js';
 import { compactText, estimateTokens, readTokenBudget } from './runtime/token-budget.js';
 import { loadAssistantConfig } from './runtime/config.js';
@@ -24,7 +21,6 @@ import { importClaudeCodeMemory, readClaudeCodeStatus, recordClaudeCodeHook } fr
 import { importCodexMemory, readCodexStatus, recordCodexHook } from './runtime/codex-context.js';
 import { runAutoAssistant, shouldProposeInjectionForSignal } from './runtime/auto-assistant.js';
 import { readIdleSchedulerSnapshot } from './runtime/idle-scheduler.js';
-import { createCheckpoint, listCheckpoints, restoreCheckpoint } from './runtime/checkpoint.js';
 import { evaluateDone, readDoneReport } from './runtime/completion.js';
 import { getHealth } from './runtime/health.js';
 import { readProvenance, recordProvenance, summarizeProvenance } from './runtime/provenance.js';
@@ -37,8 +33,6 @@ function usage(): void {
     '',
     'Usage:',
     '  overseer <tmux-session>  Start unified monitoring TUI for one tmux session',
-    '  overseer goal <task>     Queue a product-completeness goal',
-    '  overseer checkpoint list|create|restore',
     '  overseer done [dir]       Show completion verdict',
     '  overseer doctor [dir]     Show local health checks',
     '  overseer provenance [dir] Show input provenance log',
@@ -50,8 +44,6 @@ function usage(): void {
     '  /audit       Show audit index and risks',
     '  /knowledge   Show development pattern and knowledge state',
     '  /logs        Show assistant operation log',
-    '  /run <task>  Run a development task now',
-    '  /goal <task> Queue a product-completeness goal',
     '  /scan        Run monitor scan now',
     '  /help        Show TUI help',
     '',
@@ -59,11 +51,6 @@ function usage(): void {
 }
 
 const KNOWN_COMMANDS = new Set([
-  'run',
-  'agent',
-  'daemon',
-  'submit',
-  'goal',
   'status',
   'tokens',
   'claude',
@@ -73,7 +60,6 @@ const KNOWN_COMMANDS = new Set([
   'skills',
   'events',
   'inject',
-  'checkpoint',
   'done',
   'doctor',
   'provenance',
@@ -113,108 +99,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === 'run') {
-    const task = rest.join(' ').trim();
-    if (!task) {
-      usage();
-      process.exitCode = 1;
-      return;
-    }
-    recordProvenance(process.cwd(), { source: 'cli', command: 'run', content: task });
-    const result = await runAutonomousTask({
-      task,
-      projectDir: process.cwd(),
-      onEvent: (event) => console.log(`[${event.phase}] ${event.message}`),
-    });
-    console.log(`result: ${result.success ? 'success' : 'failed'}`);
-    process.exitCode = result.success ? 0 : 1;
-    return;
-  }
-
-  if (command === 'agent') {
-    const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
-    let stopping = false;
-    process.once('SIGINT', () => { stopping = true; });
-    process.once('SIGTERM', () => { stopping = true; });
-    await runAgentRuntime({
-      projectDir,
-      onLog: (message) => console.log(`[agent] ${message}`),
-      shouldStop: () => stopping,
-    });
-    return;
-  }
-
-  if (command === 'daemon') {
-    const [action, dir] = rest;
-    const projectDir = dir ? resolve(dir) : process.cwd();
-    if (action === 'start') {
-      const status = readAgentStatus(projectDir);
-      if (status?.pid && isPidRunning(status.pid) && status.state !== 'stopped') {
-        console.log(`already running: pid ${status.pid}`);
-        return;
-      }
-      const child = spawn(process.execPath, [process.argv[1], 'agent', projectDir], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      child.unref();
-      console.log(`started: pid ${child.pid}`);
-      return;
-    }
-    if (action === 'stop') {
-      const status = readAgentStatus(projectDir);
-      if (!status?.pid || !isPidRunning(status.pid)) {
-        console.log('not running');
-        return;
-      }
-      process.kill(status.pid, 'SIGTERM');
-      console.log(`stopped: pid ${status.pid}`);
-      return;
-    }
-    if (action === 'status') {
-      const status = readAgentStatus(projectDir);
-      console.log(`agent: ${status?.state ?? 'not started'}${status?.pid ? ` | pid: ${status.pid}` : ''}`);
-      return;
-    }
-    usage();
-    process.exitCode = 1;
-    return;
-  }
-
-  if (command === 'submit') {
-    const task = rest.join(' ').trim();
-    if (!task) {
-      usage();
-      process.exitCode = 1;
-      return;
-    }
-    recordProvenance(process.cwd(), { source: 'cli', command: 'submit', content: task });
-    const job = submitAgentJob(process.cwd(), task);
-    console.log(`queued: ${job.id}`);
-    return;
-  }
-
-  if (command === 'goal') {
-    const task = rest.join(' ').trim();
-    if (!task) {
-      usage();
-      process.exitCode = 1;
-      return;
-    }
-    recordProvenance(process.cwd(), { source: 'cli', command: 'goal', content: task });
-    const job = submitAgentJob(process.cwd(), task);
-    console.log(`goal queued: ${job.id}`);
-    return;
-  }
-
   if (command === 'status') {
     const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
-    const records = readRunRecords(projectDir);
-    const success = records.filter((record) => record.success).length;
-    const failed = records.length - success;
-    const latest = records.at(-1);
-    const status = readAgentStatus(projectDir);
-    const jobs = listAgentJobs(projectDir);
     const history = readHistory(projectDir);
     const events = readEvents(projectDir);
     const profile = readProjectProfile(projectDir);
@@ -222,18 +108,13 @@ async function main(): Promise<void> {
     const config = loadAssistantConfig(projectDir);
     const idle = readIdleSchedulerSnapshot(projectDir);
     const injections = listInjections(projectDir, 100);
-    const queued = jobs.filter((item) => item.job.state === 'queued').length;
-    const running = jobs.filter((item) => item.job.state === 'running').length;
-    const done = jobs.filter((item) => item.job.state === 'done').length;
-    const jobFailed = jobs.filter((item) => item.job.state === 'failed').length;
     console.log(`project: ${projectDir}`);
-    console.log(`agent: ${status?.state ?? 'not started'}${status?.currentJobId ? ` | current: ${status.currentJobId}` : ''}`);
-    console.log(`queue: queued ${queued} | running ${running} | done ${done} | failed ${jobFailed}`);
     console.log(`history: ${history.length} recent records | events: ${events.length}${profile ? ` | files: ${profile.fileCount}` : ''}`);
     console.log(`inject: proposed ${injections.filter((item) => item.state === 'proposed').length} | sent ${injections.filter((item) => item.state === 'sent').length} | blocked ${injections.filter((item) => item.state === 'blocked').length}`);
     console.log(`token budget: prompt ${budget.maxPromptTokens} | context ${budget.maxContextTokens}`);
     console.log(`tmux: capture ${config.maxCaptureLines} lines | watch ${config.watchIntervalMs}ms | inject ${config.injectEnabled ? 'on' : 'off'}`);
     console.log(`idle scheduler: ${config.idleSchedulerEnabled ? 'on' : 'off'} | threshold ${config.idleThresholdMs}ms | interval ${config.idleSchedulerIntervalMs}ms`);
+    console.log(`idle autopilot: ${config.idleAutopilotEnabled ? 'on' : 'off'} | threshold ${config.idleAutopilotThresholdMs}ms | cooldown ${config.idleAutopilotCooldownMs}ms`);
     console.log(`idle backlog: open ${idle.openBacklog}${idle.topGoal ? ` | top ${idle.topPriority}: ${idle.topGoal}` : ''}`);
     console.log(`request direction: ${idle.direction}`);
     console.log(`lanes: ${Object.entries(getLaneStats()).map(([lane, stat]) => `${lane}:${stat.active ? 'active' : 'idle'}/${stat.queued}`).join(' ')}`);
@@ -242,14 +123,10 @@ async function main(): Promise<void> {
     const codex = readCodexStatus();
     console.log(`claude: ${claude.exists ? 'found' : 'missing'} | memory ${claude.projectMemoryFiles} | dangerous-skip ${claude.skipDangerousModePermissionPrompt ? 'on' : 'off'}`);
     console.log(`codex: ${codex.exists ? 'found' : 'missing'} | hooks ${codex.hooksEnabled ? 'on' : 'off'} | memories ${codex.memoriesEnabled ? 'on' : 'off'}`);
-    console.log(`runs: ${records.length} | success: ${success} | failed: ${failed}`);
     const doneReport = readDoneReport(projectDir);
     if (doneReport) {
       const summary = doneReport.split('\n').find((line) => line.startsWith('## '))?.replace(/^##\s+/, '');
       if (summary) console.log(`completion: ${summary}`);
-    }
-    if (latest) {
-      console.log(`latest: ${latest.success ? 'success' : 'failed'} | ${latest.task}`);
     }
     const skills = getRankedSkillStats(projectDir);
     if (skills.length > 0) {
@@ -399,37 +276,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === 'checkpoint') {
-    const [action, value] = rest;
-    const projectDir = process.cwd();
-    if (action === 'list') {
-      const checkpoints = listCheckpoints(projectDir, 20);
-      if (checkpoints.length === 0) {
-        console.log('checkpoints: empty');
-        return;
-      }
-      for (const checkpoint of checkpoints) {
-        console.log(`${checkpoint.id} ${checkpoint.timestamp} ${checkpoint.message}`);
-      }
-      return;
-    }
-    if (action === 'create') {
-      const result = createCheckpoint(projectDir, value ? rest.slice(1).join(' ') : 'manual checkpoint');
-      console.log(`${result.success ? 'created' : 'failed'}: ${result.id ?? result.message}`);
-      process.exitCode = result.success ? 0 : 1;
-      return;
-    }
-    if (action === 'restore' && value) {
-      const result = restoreCheckpoint(projectDir, value);
-      console.log(`${result.success ? 'restored' : 'failed'}: ${result.message}`);
-      process.exitCode = result.success ? 0 : 1;
-      return;
-    }
-    console.log('usage: overseer checkpoint list|create [label]|restore <id>');
-    process.exitCode = 1;
-    return;
-  }
-
   if (command === 'done') {
     const projectDir = rest[0] ? resolve(rest[0]) : process.cwd();
     const verdict = evaluateDone(projectDir);
@@ -567,15 +413,6 @@ async function startMonitor(tmuxSessionName: string, projectDir: string): Promis
     return;
   }
   render(<App projectDir={projectDir} tmuxSessionName={tmuxSessionName} />, { exitOnCtrlC: true });
-}
-
-function isPidRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function watchTmux(target: string, once: boolean): Promise<void> {
